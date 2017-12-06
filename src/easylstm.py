@@ -1,4 +1,4 @@
-from pycnn import *
+from dynet import *
 from utils import ParseForest, read_conll, write_conll
 import utils, time, random
 import numpy as np
@@ -7,7 +7,7 @@ import numpy as np
 class EasyFirstLSTM:
     def __init__(self, words, pos, rels, w2i, options):
         random.seed(1)
-        self.model = Model()
+        self.model = ParameterCollection()
         self.trainer = AdamTrainer(self.model)
 
         self.activations = {'tanh': tanh, 'sigmoid': logistic, 'relu': rectify, 'tanh3': (lambda x: tanh(cwise_multiply(cwise_multiply(x, x), x)))}
@@ -20,17 +20,20 @@ class EasyFirstLSTM:
         self.rdims = options.rembedding_dims
         self.oracle = options.oracle
         self.layers = options.lstm_layers
+        # {w:num of times w appear}
         self.wordsCount = words
         self.vocab = {word: ind+3 for word, ind in w2i.iteritems()}
         self.pos = {word: ind+3 for ind, word in enumerate(pos)}
         self.rels = {word: ind for ind, word in enumerate(rels)}
         self.irels = rels
 
-        self.builders = [LSTMBuilder(self.layers, self.ldims, self.ldims, self.model), LSTMBuilder(self.layers, self.ldims, self.ldims, self.model)]
+        self.builders = [VanillaLSTMBuilder(self.layers, self.ldims, self.ldims, self.model),
+                         VanillaLSTMBuilder(self.layers, self.ldims, self.ldims, self.model)]
 
         self.blstmFlag = options.blstmFlag
         if self.blstmFlag:
-            self.surfaceBuilders = [LSTMBuilder(self.layers, self.ldims, self.ldims * 0.5, self.model), LSTMBuilder(self.layers, self.ldims, self.ldims * 0.5, self.model)]
+            self.surfaceBuilders = [VanillaLSTMBuilder(self.layers, self.ldims, self.ldims * 0.5, self.model),
+                                    VanillaLSTMBuilder(self.layers, self.ldims, self.ldims * 0.5, self.model)]
         self.hidden_units = options.hidden_units
         self.hidden2_units = options.hidden2_units
 
@@ -41,16 +44,16 @@ class EasyFirstLSTM:
             self.external_embedding = {line.split(' ')[0] : [float(f) for f in line.strip().split(' ')[1:]] for line in external_embedding_fp}
             external_embedding_fp.close()
 
-	    self.edim = len(self.external_embedding.values()[0])
+        self.edim = len(self.external_embedding.values()[0])
             self.noextrn = [0.0 for _ in xrange(self.edim)]
             self.extrnd = {word: i + 3 for i, word in enumerate(self.external_embedding)}
-            self.model.add_lookup_parameters("extrn-lookup", (len(self.external_embedding) + 3, self.edim))
+            self.elookup = self.model.add_lookup_parameters((len(self.external_embedding) + 3, self.edim))
             for word, i in self.extrnd.iteritems():
-                self.model["extrn-lookup"].init_row(i, self.external_embedding[word])
+                self.elookup.init_row(i, self.external_embedding[word])
             self.extrnd['*PAD*'] = 1
             self.extrnd['*INITIAL*'] = 2
 
-	    print 'Load external embedding. Vector dimensions', self.edim
+        print 'Load external embedding. Vector dimensions', self.edim
 
         self.vocab['*PAD*'] = 1
         self.pos['*PAD*'] = 1
@@ -58,34 +61,36 @@ class EasyFirstLSTM:
         self.vocab['*INITIAL*'] = 2
         self.pos['*INITIAL*'] = 2
 
-        self.model.add_lookup_parameters("word-lookup", (len(words) + 3, self.wdims))
-        self.model.add_lookup_parameters("pos-lookup", (len(pos) + 3, self.pdims))
-        self.model.add_lookup_parameters("rels-lookup", (len(rels), self.rdims))
+
+        self.wlookup = self.model.add_lookup_parameters((len(words) + 3, self.wdims))
+        self.plookup = self.model.add_lookup_parameters((len(pos) + 3, self.pdims))
+        self.rlookup = self.model.add_lookup_parameters((len(rels), self.rdims))
 
         self.nnvecs = 2
 
-        self.model.add_parameters("word-to-lstm", (self.ldims, self.wdims + self.pdims + (self.edim if self.external_embedding is not None else 0)))
-        self.model.add_parameters("word-to-lstm-bias", (self.ldims))
-        self.model.add_parameters("lstm-to-lstm", (self.ldims, self.ldims * self.nnvecs + self.rdims))
-        self.model.add_parameters("lstm-to-lstm-bias", (self.ldims))
+        self.word2lstm = self.model.add_parameters((self.ldims, self.wdims + self.pdims + (self.edim if self.external_embedding is not None else 0)))
+        self.word2lstmbias = self.model.add_parameters((self.ldims))
+        self.lstm2lstm = self.model.add_parameters((self.ldims, self.ldims * self.nnvecs + self.rdims))
+        self.lstm2lstmbias = self.model.add_parameters((self.ldims))
 
-        self.model.add_parameters("hidden-layer", (self.hidden_units, self.ldims * self.nnvecs * ((self.k + 1) * 2)))
-        self.model.add_parameters("hidden-bias", (self.hidden_units))
+        self.hidLayer = self.model.add_parameters((self.hidden_units, self.ldims * self.nnvecs * (self.k + 1)))
+        self.hidBias = self.model.add_parameters((self.hidden_units))
 
-        self.model.add_parameters("hidden2-layer", (self.hidden2_units, self.hidden_units))
-        self.model.add_parameters("hidden2-bias", (self.hidden2_units))
+        self.hid2Layer = self.model.add_parameters((self.hidden2_units, self.hidden_units))
+        self.hid2Bias = self.model.add_parameters((self.hidden2_units))
 
-        self.model.add_parameters("output-layer", (2, self.hidden2_units if self.hidden2_units > 0 else self.hidden_units))
-        self.model.add_parameters("output-bias", (2))
+        self.outLayer = self.model.add_parameters((2, self.hidden2_units if self.hidden2_units > 0 else self.hidden_units))
+        self.outBias = self.model.add_parameters((2))
 
-        self.model.add_parameters("rhidden-layer", (self.hidden_units, self.ldims * self.nnvecs * ((self.k + 1) * 2)))
-        self.model.add_parameters("rhidden-bias", (self.hidden_units))
 
-        self.model.add_parameters("rhidden2-layer", (self.hidden2_units, self.hidden_units))
-        self.model.add_parameters("rhidden2-bias", (self.hidden2_units))
+        self.rhidLayer = self.model.add_parameters((self.hidden_units, self.ldims * self.nnvecs * (self.k + 1)))
+        self.rhidBias = self.model.add_parameters((self.hidden_units))
 
-        self.model.add_parameters("routput-layer", (2 * (len(self.irels) + 0), self.hidden2_units if self.hidden2_units > 0 else self.hidden_units))
-        self.model.add_parameters("routput-bias", (2 * (len(self.irels) + 0)))
+        self.rhid2Layer = self.model.add_parameters((self.hidden2_units, self.hidden_units))
+        self.rhid2Bias = self.model.add_parameters((self.hidden2_units))
+
+        self.routLayer = self.model.add_parameters((2 * (len(self.irels) + 0) + 0, self.hidden2_units if self.hidden2_units > 0 else self.hidden_units))
+        self.routBias = self.model.add_parameters((2 * (len(self.irels) + 0) + 0))
 
 
     def  __getExpr(self, forest, i, train):
@@ -99,14 +104,14 @@ class EasyFirstLSTM:
                                   if j>=0 and j<nRoots else self.empty for j in xrange(i-self.k, i+self.k+2) ])
 
         if self.hidden2_units > 0:
-            routput = (self.routLayer * self.activation(self.rhid2Bias + self.rhid2Layer * self.activation(self.rhidLayer * input + self.rhidBias)) + self.routBias)
+            routput = (self.routLayer.expr() * self.activation(self.rhid2Bias.expr() + self.rhid2Layer.expr() * self.activation(self.rhidLayer.expr() * input + self.rhidBias.expr())) + self.routBias.expr())
         else:
-            routput = (self.routLayer * self.activation(self.rhidLayer * input + self.rhidBias) + self.routBias)
+            routput = (self.routLayer.expr() * self.activation(self.rhidLayer.expr() * input + self.rhidBias.expr()) + self.routBias.expr())
 
         if self.hidden2_units > 0:
-            output = (self.outLayer * self.activation(self.hid2Bias + self.hid2Layer * self.activation(self.hidLayer * input + self.hidBias)) + self.outBias)
+            output = (self.outLayer.expr() * self.activation(self.hid2Bias.expr() + self.hid2Layer.expr() * self.activation(self.hidLayer.expr() * input + self.hidBias.expr())) + self.outBias.expr())
         else:
-            output = (self.outLayer * self.activation(self.hidLayer * input + self.hidBias) + self.outBias)
+            output = (self.outLayer.expr() * self.activation(self.hidLayer.expr() * input + self.hidBias.expr()) + self.outBias.expr())
 
         return routput, output
 
@@ -128,24 +133,27 @@ class EasyFirstLSTM:
 
 
     def Load(self, filename):
-        self.model.load(filename)
+        self.model.populate(filename)
 
 
     def Init(self):
+        # convert word+pos vector to feed to lstm
         self.word2lstm = parameter(self.model["word-to-lstm"])
+        # inner parameters of lstm
         self.lstm2lstm = parameter(self.model["lstm-to-lstm"])
-
+        # bias
         self.word2lstmbias = parameter(self.model["word-to-lstm-bias"])
         self.lstm2lstmbias = parameter(self.model["lstm-to-lstm-bias"])
-
+        # hidlayers use to calc scores of action
         self.hid2Layer = parameter(self.model["hidden2-layer"])
         self.hidLayer = parameter(self.model["hidden-layer"])
+        # Output layer
         self.outLayer = parameter(self.model["output-layer"])
 
         self.hid2Bias = parameter(self.model["hidden2-bias"])
         self.hidBias = parameter(self.model["hidden-bias"])
         self.outBias = parameter(self.model["output-bias"])
-
+        # hidlayers use to calc scores of actions + label
         self.rhid2Layer = parameter(self.model["rhidden2-layer"])
         self.rhidLayer = parameter(self.model["rhidden-layer"])
         self.routLayer = parameter(self.model["routput-layer"])
@@ -153,33 +161,43 @@ class EasyFirstLSTM:
         self.rhid2Bias = parameter(self.model["rhidden2-bias"])
         self.rhidBias = parameter(self.model["rhidden-bias"])
         self.routBias = parameter(self.model["routput-bias"])
+        # external word embedding
+        evec = self.elookup[1] if self.external_embedding is not None else None
 
-        evec = lookup(self.model["extrn-lookup"], 1) if self.external_embedding is not None else None
-        paddingWordVec = lookup(self.model["word-lookup"], 1)
+        paddingWordVec = self.wlookup[1]
         paddingPosVec = lookup(self.model["pos-lookup"], 1) if self.pdims > 0 else None
+        paddingPosVec = self.plookup[1] if self.pdims > 0 else None
 
-        paddingVec = tanh(self.word2lstm * concatenate(filter(None, [paddingWordVec, paddingPosVec, evec])) + self.word2lstmbias )
-	self.empty = (concatenate([self.builders[0].initial_state().add_input(paddingVec).output(), self.builders[1].initial_state().add_input(paddingVec).output()]))
+        paddingVec = tanh(self.word2lstm.expr() * concatenate(filter(None, [paddingWordVec, paddingPosVec, evec])) + self.word2lstmbias.expr())
+        self.empty = (concatenate([self.builders[0].initial_state().add_input(paddingVec).output(), self.builders[1].initial_state().add_input(paddingVec).output()]))
 
 
     def getWordEmbeddings(self, forest, train):
+        """
+        Assign vector to all word in forest
+        """
         for root in forest.roots:
+            # a root is a entry
             c = float(self.wordsCount.get(root.norm, 0))
-            root.wordvec = lookup(self.model["word-lookup"], int(self.vocab.get(root.norm, 0)) if not train or (random.random() < (c/(0.25+c))) else 0)
-            root.posvec = lookup(self.model["pos-lookup"], int(self.pos[root.pos])) if self.pdims > 0 else None
+            # drop out
+            # if drop flag is ok then index else 0
+            root.wordvec = self.wlookup[int(self.vocab.get(root.norm, 0)) if not train or (random.random() < (c/(0.25+c))) else 0]
+            # if pos embedding was use
+            root.posvec = [int(self.pos[root.pos])] if self.pdims > 0 else None
 
             if self.external_embedding is not None:
                 if root.form in self.external_embedding:
-                    root.evec = lookup(self.model["extrn-lookup"], self.extrnd[root.form] )
+                    root.evec = self.elookup[self.extrnd[root.form]]
                 elif root.norm in self.external_embedding:
-                    root.evec = lookup(self.model["extrn-lookup"], self.extrnd[root.norm] )
+                    root.evec = self.elookup[self.extrnd[root.norm]]
                 else:
-                    root.evec = lookup(self.model["extrn-lookup"], 0)
+                    root.evec = self.elookup[0]
             else:
                 root.evec = None
 
-            root.ivec = (self.word2lstm * concatenate(filter(None, [root.wordvec, root.posvec, root.evec]))) + self.word2lstmbias
+            root.ivec = (self.word2lstm.expr() * concatenate(filter(None, [root.wordvec, root.posvec, root.evec]))) + self.word2lstmbias.expr()
 
+        #bi lstm
         if self.blstmFlag:
             forward  = self.surfaceBuilders[0].initial_state()
             backward = self.surfaceBuilders[1].initial_state()
@@ -230,7 +248,7 @@ class EasyFirstLSTM:
                     roots[bestChild].pred_relation = bestRelation
 
                     roots[bestParent].lstms[bestOp] = roots[bestParent].lstms[bestOp].add_input((self.activation(self.lstm2lstmbias + self.lstm2lstm *
-                        	concatenate([roots[bestChild].lstms[0].output(), lookup(self.model["rels-lookup"], bestIRelation), roots[bestChild].lstms[1].output()]))))
+                            concatenate([roots[bestChild].lstms[0].output(), lookup(self.model["rels-lookup"], bestIRelation), roots[bestChild].lstms[1].output()]))))
 
                     forest.Attach(bestParent, bestChild)
 
@@ -239,6 +257,14 @@ class EasyFirstLSTM:
 
 
     def Train(self, conll_path):
+        """
+        Training processing
+        Args:
+            conll_path: training file path
+        Returns:
+        Raises:
+
+        """
         mloss = 0.0
         errors = 0
         batch = 0
@@ -253,14 +279,16 @@ class EasyFirstLSTM:
         with open(conll_path, 'r') as conllFP:
             shuffledData = list(read_conll(conllFP, True))
             random.shuffle(shuffledData)
-
+            # list contain all loss expressions
             errs = []
             eeloss = 0.0
 
             self.Init()
+            print "Bat dau train"
 
             for iSentence, sentence in enumerate(shuffledData):
                 if iSentence % 100 == 0 and iSentence != 0:
+                    # reset eerrors, loss after 100 sents
                     print 'Processing sentence number:', iSentence, 'Loss:', eloss / etotal, 'Errors:', (float(eerrors)) / etotal, 'Labeled Errors:', (float(lerrors) / etotal) , 'Time', time.time()-start
                     start = time.time()
                     eerrors = 0
@@ -269,12 +297,15 @@ class EasyFirstLSTM:
                     lerrors = 0
                     ltotal = 0
 
+                # build data structured from gold sentence
+                print "goi ham ParseForest(sentence)"
                 forest = ParseForest(sentence)
+                print "bat dau gan word vector"
                 self.getWordEmbeddings(forest, True)
-
+                # every root has two rnn !!!
                 for root in forest.roots:
                     root.lstms = [self.builders[0].initial_state().add_input(root.vec),
-                        	  self.builders[1].initial_state().add_input(root.vec)]
+                              self.builders[1].initial_state().add_input(root.vec)]
 
                 unassigned = {entry.id: sum([1 for pentry in sentence if pentry.parent_id == entry.id]) for entry in sentence}
 
@@ -319,7 +350,7 @@ class EasyFirstLSTM:
                         eloss += 1.0 + bestWrongScore - bestValidScore
                         errs.append(loss)
 
-                    if not self.oracle or bestValidScore - bestWrongScore > 1.0 or (bestValidScore > bestWrongScore and random.random() > 0.1): 
+                    if not self.oracle or bestValidScore - bestWrongScore > 1.0 or (bestValidScore > bestWrongScore and random.random() > 0.1):
                         selectedOp = bestValidOp
                         selectedParent = bestValidParent
                         selectedChild = bestValidChild
@@ -346,9 +377,9 @@ class EasyFirstLSTM:
                     unassigned[roots[selectedChild].parent_id] -= 1
 
                     roots[selectedParent].lstms[selectedOp] = roots[selectedParent].lstms[selectedOp].add_input(
-                        	    self.activation( self.lstm2lstm *
-                                	noise(concatenate([roots[selectedChild].lstms[0].output(), lookup(self.model["rels-lookup"], selectedIRel),
-                                        	           roots[selectedChild].lstms[1].output()]), 0.0) + self.lstm2lstmbias))
+                                self.activation( self.lstm2lstm *
+                                    noise(concatenate([roots[selectedChild].lstms[0].output(), lookup(self.model["rels-lookup"], selectedIRel),
+                                                       roots[selectedChild].lstms[1].output()]), 0.0) + self.lstm2lstmbias))
 
                     forest.Attach(selectedParent, selectedChild)
 
@@ -374,5 +405,5 @@ class EasyFirstLSTM:
 
             renew_cg()
 
-        self.trainer.update_epoch()
+        self.trainer.update()
         print "Loss: ", mloss/iSentence
