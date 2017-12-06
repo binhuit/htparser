@@ -83,7 +83,7 @@ class EasyFirstLSTM:
         self.outBias = self.model.add_parameters((2))
 
 
-        self.rhidLayer = self.model.add_parameters((self.hidden_units, self.ldims * self.nnvecs * (self.k + 1)))
+        self.rhidLayer = self.model.add_parameters((self.hidden_units, self.ldims * self.nnvecs * ((self.k + 1)*2))
         self.rhidBias = self.model.add_parameters((self.hidden_units))
 
         self.rhid2Layer = self.model.add_parameters((self.hidden2_units, self.hidden_units))
