@@ -92,8 +92,7 @@ class EasyFirstLSTM:
         self.routLayer = self.model.add_parameters((2 * (len(self.irels) + 0) + 0, self.hidden2_units if self.hidden2_units > 0 else self.hidden_units))
         self.routBias = self.model.add_parameters((2 * (len(self.irels) + 0) + 0))
 
-
-    def  __getExpr(self, forest, i, train):
+    def __getExpr(self, forest, i, train):
         roots = forest.roots
         nRoots = len(roots)
 
@@ -137,30 +136,6 @@ class EasyFirstLSTM:
 
 
     def Init(self):
-        # convert word+pos vector to feed to lstm
-        self.word2lstm = parameter(self.model["word-to-lstm"])
-        # inner parameters of lstm
-        self.lstm2lstm = parameter(self.model["lstm-to-lstm"])
-        # bias
-        self.word2lstmbias = parameter(self.model["word-to-lstm-bias"])
-        self.lstm2lstmbias = parameter(self.model["lstm-to-lstm-bias"])
-        # hidlayers use to calc scores of action
-        self.hid2Layer = parameter(self.model["hidden2-layer"])
-        self.hidLayer = parameter(self.model["hidden-layer"])
-        # Output layer
-        self.outLayer = parameter(self.model["output-layer"])
-
-        self.hid2Bias = parameter(self.model["hidden2-bias"])
-        self.hidBias = parameter(self.model["hidden-bias"])
-        self.outBias = parameter(self.model["output-bias"])
-        # hidlayers use to calc scores of actions + label
-        self.rhid2Layer = parameter(self.model["rhidden2-layer"])
-        self.rhidLayer = parameter(self.model["rhidden-layer"])
-        self.routLayer = parameter(self.model["routput-layer"])
-
-        self.rhid2Bias = parameter(self.model["rhidden2-bias"])
-        self.rhidBias = parameter(self.model["rhidden-bias"])
-        self.routBias = parameter(self.model["routput-bias"])
         # external word embedding
         evec = self.elookup[1] if self.external_embedding is not None else None
 
