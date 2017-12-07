@@ -43,8 +43,7 @@ class EasyFirstLSTM:
             external_embedding_fp.readline()
             self.external_embedding = {line.split(' ')[0] : [float(f) for f in line.strip().split(' ')[1:]] for line in external_embedding_fp}
             external_embedding_fp.close()
-
-        self.edim = len(self.external_embedding.values()[0])
+            self.edim = len(self.external_embedding.values()[0])
             self.noextrn = [0.0 for _ in xrange(self.edim)]
             self.extrnd = {word: i + 3 for i, word in enumerate(self.external_embedding)}
             self.elookup = self.model.add_lookup_parameters((len(self.external_embedding) + 3, self.edim))
@@ -53,7 +52,7 @@ class EasyFirstLSTM:
             self.extrnd['*PAD*'] = 1
             self.extrnd['*INITIAL*'] = 2
 
-        print 'Load external embedding. Vector dimensions', self.edim
+            print 'Load external embedding. Vector dimensions', self.edim
 
         self.vocab['*PAD*'] = 1
         self.pos['*PAD*'] = 1
